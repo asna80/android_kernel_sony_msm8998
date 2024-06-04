@@ -16,13 +16,12 @@
  */
 
 #include <crypto/hash.h>
-#include <linux/slab.h> // For kmalloc and kfree
+#include <linux/slab.h> // for kmalloc and kfree
 
 #include "include/apparmor.h"
 #include "include/crypto.h"
 
 static unsigned int apparmor_hash_size;
-
 static struct crypto_shash *apparmor_tfm;
 
 unsigned int aa_hash_size(void)
@@ -30,13 +29,13 @@ unsigned int aa_hash_size(void)
     return apparmor_hash_size;
 }
 
-int aa_calc_profile_hash(struct aa_profile *profile, u32 version, void *start,
-                         size_t len)
+int aa_calc_profile_hash(struct aa_profile *profile, u32 version, void *start, size_t len)
 {
-    struct shash_desc *shash;
+    struct shash_desc *desc;
     char *ctx;
     int error = -ENOMEM;
     u32 le32_version = cpu_to_le32(version);
+    size_t ctx_size;
 
     if (!apparmor_tfm)
         return 0;
@@ -45,38 +44,43 @@ int aa_calc_profile_hash(struct aa_profile *profile, u32 version, void *start,
     if (!profile->hash)
         goto fail;
 
-    // Allocate memory for shash_desc and ctx
-    shash = kmalloc(sizeof(*shash) + crypto_shash_descsize(apparmor_tfm), GFP_KERNEL);
-    if (!shash)
+    ctx_size = crypto_shash_descsize(apparmor_tfm);
+    ctx = kmalloc(ctx_size, GFP_KERNEL);
+    if (!ctx)
         goto fail;
 
-    ctx = (char *)(shash + 1); // ctx follows shash in allocated memory
-    shash->tfm = apparmor_tfm;
-    shash->flags = 0;
+    desc = kzalloc(sizeof(*desc) + ctx_size, GFP_KERNEL);
+    if (!desc) {
+        kfree(ctx);
+        goto fail;
+    }
 
-    error = crypto_shash_init(shash);
-    if (error)
-        goto fail_free_shash;
-    error = crypto_shash_update(shash, (u8 *) &le32_version, 4);
-    if (error)
-        goto fail_free_shash;
-    error = crypto_shash_update(shash, (u8 *) start, len);
-    if (error)
-        goto fail_free_shash;
-    error = crypto_shash_final(shash, profile->hash);
-    if (error)
-        goto fail_free_shash;
+    desc->tfm = apparmor_tfm;
+    desc->flags = 0;
 
-    kfree(shash); // Free the allocated memory
+    error = crypto_shash_init(desc);
+    if (error)
+        goto fail_free;
+    error = crypto_shash_update(desc, (u8 *) &le32_version, 4);
+    if (error)
+        goto fail_free;
+    error = crypto_shash_update(desc, (u8 *) start, len);
+    if (error)
+        goto fail_free;
+    error = crypto_shash_final(desc, profile->hash);
+    if (error)
+        goto fail_free;
+
+    kfree(ctx);
+    kfree(desc);
     return 0;
 
-fail_free_shash:
-    kfree(shash); // Ensure to free the allocated memory on error
-
+fail_free:
+    kfree(ctx);
+    kfree(desc);
 fail:
     kfree(profile->hash);
     profile->hash = NULL;
-
     return error;
 }
 
